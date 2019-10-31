@@ -1,0 +1,439 @@
+---
+title: "Bike Sharing Analysis"
+output: pdf_document
+always_allow_html: yes
+author: "Mohamad Makkawi"
+---
+
+```{r,warning=FALSE}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(leaflet))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(kableExtra))
+```
+
+# Stations
+
+```{r, echo=TRUE,warning=FALSE,message=FALSE}
+stations <- read_csv("data/station_data.csv")
+```
+
+```{r}
+head(stations)
+```
+
+```{r}
+summary(stations)
+```
+
+## Visual distribution of the stations
+
+Note: Add map of Greater San Fransisco and configure sizes of points to match volume
+
+```{r, include=FALSE,echo=FALSE,eval=FALSE}
+library("rnaturalearth")
+library("rnaturalearthdata")
+library("sf")
+library('rgeos')
+
+```
+
+### Using ggplot
+
+```{r}
+stations %>%
+  ggplot(aes(Lat,Long)) +
+  geom_point()
+```
+
+### Using leaflet
+
+```{r}
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>% setView(lat = 37.57,lng = -122.2,zoom=10) %>% addTiles() %>% addCircles(data=stations,~Long,~Lat,color="blue")
+```
+
+## Distribution of Stations by City
+
+```{r}
+
+stations %>%
+  group_by(City) %>%
+  summarize(n_stations=n()) %>%
+  ggplot(aes(City,n_stations)) +
+  geom_col() +
+  ylab("Number of stations")
+  
+
+```
+
+# Trip Data
+
+```{r}
+
+trips <- read_csv("data/trip_data.csv")
+
+```
+
+```{r}
+head(trips)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+# Number of trips started by station
+
+```{r}
+trips %>%
+  group_by(start_station_id = `Start Station`) %>%
+  summarize(n=n()) %>%
+  arrange(desc(n)) %>%
+  ggplot(aes(start_station_id,n)) +
+  geom_col()
+```
+
+# Number of trips started by city
+
+```{r}
+stations_trips <- stations %>%
+  select(Id,City)
+```
+
+
+```{r}
+trips %>%
+  select(everything(),-`End Date`,-`End Station`) %>%
+  left_join(stations_trips,by = c("Start Station"="Id")) %>%
+  group_by(City) %>%
+  summarize(n=n())%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+### Takeaway: Large majority of trips started from San Francisco
+
+# Number of trips by end station
+
+```{r}
+trips %>%
+  group_by(end_station_id = `End Station`) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(end_station_id,n)) +
+  geom_col()
+```
+
+## Number of trips ended by City
+
+```{r}
+trips %>%
+  select(everything(),-`Start Date`,-`Start Station`) %>%
+  left_join(stations_trips,by = c("End Station"="Id")) %>%
+  group_by(City) %>%
+  summarize(n=n())%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+### Takeaway: Most trips start and end in the same city
+
+## Most popular routes
+
+```{r}
+head(pop_routes <- trips %>%
+  group_by(start_id = `Start Station`,end_id = `End Station`)%>%
+  summarize(n=n()) %>%
+  arrange(desc(n)),10)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+### Visualizing popular routes in San Francisco
+
+```{r}
+stations_coor <- stations %>%
+  select(Id,Lat,Long)
+```
+
+```{r}
+pop_routes %>%
+  filter(start_id > 40 & start_id < 75 & end_id>40 & end_id <75) %>%
+  left_join(stations_coor, by = c("start_id"="Id")) %>%
+  select(start_id,Lat1 = Lat,Long1 = Long,end_id,n) %>%
+  left_join(stations_coor,by=c("end_id"="Id")) %>%
+  ggplot()+
+  geom_segment(aes(x=Long1,y=Lat1,xend=Long,yend=Lat,color=n/1000))
+```
+
+## Trip durations
+
+```{r}
+tim_dif <- trips %>%
+  mutate(start = lubridate::dmy_hm(`Start Date`),end = lubridate::dmy_hm(`End Date`)) %>%
+  mutate(time_diff = end-start) %>%
+  select(`Trip ID`,`Start Station`,start,`End Station`,end,time_diff)
+```
+
+```{r}
+head(tim_dif)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+```{r}
+
+tim_dif %>%
+  mutate(duration = if_else(time_diff>1440,"Long",if_else(time_diff<60,"Short","Average"))) %>%
+  group_by(duration) %>%
+  summarize(n=n())%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+
+```
+
+### Takeaway: Vast majority of trips less than 1 hour.
+
+## Analysis within short trips
+
+Note: Short trips defined as trips less than 60 minutes
+
+```{r}
+tim_dif %>%
+  filter(time_diff<60) %>%
+  mutate(duration = if_else(time_diff>45,"45+",if_else(time_diff>30,"30-45",if_else(time_diff>15,"15-30","0-15")))) %>%
+  group_by(duration) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(duration,n))+
+  scale_y_continuous(breaks = pretty_breaks())+
+  geom_col() + xlab("Duration (in minutes)") + ylab("Number of trips") + ggtitle("Breakdown of trip durations less than 60 minutes")
+```
+
+### Takeaway: Most bike trips are less than 15 minutes in duration
+
+## Time of day
+
+```{r}
+trips %>%
+  mutate(start = lubridate::dmy_hm(`Start Date`),end = lubridate::dmy_hm(`End Date`)) %>%
+  select(`Trip ID`,`Start Station`,start,`End Station`,end) %>%
+  group_by(time_of_day = hour(start)) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(time_of_day,n)) +
+  geom_col() +
+  xlab("Time of day") + ylab("Number of bikes rented")
+```
+
+### Takeaway: Most bike trips occur between 7AM and 7PM. There is a morning rush (7AM-9AM) and an evening rush (4PM-6PM).
+
+## Time of year
+
+```{r}
+trips %>%
+  mutate(start = lubridate::dmy_hm(`Start Date`),end = lubridate::dmy_hm(`End Date`)) %>%
+  select(`Trip ID`,`Start Station`,start,`End Station`,end) %>%
+  mutate(my_date = as.Date(start))%>%
+  group_by(m_date = month(my_date)) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(m_date,n))+
+  geom_col(bins=10)+
+  scale_x_continuous(breaks= pretty_breaks())+
+  xlab("Month")+ylab("Number of bikes rented")
+```
+
+### Takeaway: Noticeable dip in bike trips during Winter months
+
+## Day of week
+
+```{r}
+trips %>%
+  mutate(start = lubridate::dmy_hm(`Start Date`),end = lubridate::dmy_hm(`End Date`)) %>%
+  select(`Trip ID`,`Start Station`,start,`End Station`,end) %>%
+  mutate(my_date = as.Date(start)) %>%
+  mutate(day_of_week = wday(my_date)) %>%
+  group_by(day_of_week) %>%
+  summarize(n=n()) %>%
+  ggplot(aes(day_of_week,n))+
+  geom_col() +
+  xlab("Day of the week") + ylab("Number of bikes rented")
+```
+
+### Takeaway: Significant amount of trips occur on weekdays
+
+# Finding the net pickups/dropoffs for each station in a given hour
+
+Converting to datetime object
+
+```{r}
+trips_dt <- trips %>%
+  mutate(start = lubridate::dmy_hm(`Start Date`),end = lubridate::dmy_hm(`End Date`)) %>%
+  select(`Trip ID`,`Start Station`,start,`End Station`,end)
+```
+
+```{r}
+head(trips_dt)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+Breaking down date variable
+
+```{r}
+trips_d <- trips_dt %>%
+  mutate(start_year = year(start),start_month = month(start),start_day = day(start),start_hour = hour(start),end_year = year(end),end_month = month(end),end_day = day(end),end_hour = hour(end)) %>%
+  select(`Trip ID`,start_year,start_month,start_day,start_hour,`Start Station`,end_year,end_month,end_day,end_hour,`End Station`)
+```
+
+```{r}
+head(trips_d)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+## Trips started from specific station in a given hour
+
+```{r}
+trips_start <- trips_d %>%
+  group_by(start_year,start_month,start_day,start_hour,`Start Station`) %>%
+  summarize(n_start=n()) %>%
+  arrange(desc(n_start))
+```
+
+```{r}
+
+head(trips_start)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+
+```
+
+## Trips ended from specific station in a given hour
+
+```{r}
+trips_end <- trips_d %>%
+  group_by(end_year,end_month,end_day,end_hour,`End Station`) %>%
+  summarize(n_end=n()) %>%
+  arrange(desc(n_end))
+```
+
+```{r}
+head(trips_end)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+Combining the two tables
+
+```{r}
+
+trips_diff <- trips_start %>%
+  left_join(trips_end, by = c("start_year"="end_year","start_month"="end_month","start_day"="end_day","start_hour"="end_hour"))
+
+```
+
+#### Net change in bikes in a given hour
+
+```{r}
+
+trips_diff$date <- paste(trips_diff$start_day, trips_diff$start_month, trips_diff$start_year, sep="/") %>% dmy() %>% as.Date()
+
+head(trips_df <- trips_diff %>%
+  filter(`End Station`==`Start Station`) %>%
+  mutate(net = n_end - n_start,station = `Start Station`,hour = start_hour) %>%
+  select(date,hour,station,net)) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+### Example: Fluctuation of net bikes at Station 70 on a selected day
+
+```{r}
+
+trips_df %>%
+  filter(station == 70 & date == "2015-01-28") %>%
+  ggplot(aes(start_hour,net)) +
+  geom_line() +
+  xlab("Hour of day") + ylab("Net change in bikes") + ggtitle("Fluctuation at Station 70 on a select day")
+
+```
+
+This appears to be a neighborhood where individuals commute out to go to work every morning by bike, and return in the evening - hence, the fluctuating net pickups/dropoffs.
+
+## Creating the training set
+
+```{r}
+t_set <- trips_df %>%
+  ungroup() %>%
+  select(date,hour,station,net) #%>%
+  #write.csv("training_set.csv")
+```
+
+
+```{r}
+stations_city <- stations %>%
+  select(Id,City)
+```
+
+
+```{r}
+t_set_2 <- t_set %>%
+  left_join(stations_city,by=c("station"="Id"))
+```
+
+
+# Weather dataset
+
+```{r}
+
+weather <- read_csv("data/weather_data.csv")
+
+```
+
+```{r}
+weather_df<-weather %>%
+  mutate(date_format = lubridate::dmy(Date)) %>%
+  mutate(events = if_else(is.na(Events),"None",Events)) %>%
+  select(date_format,temp = `Mean TemperatureF`,Zip,events,PrecipitationIn,wind_speed = `Mean Wind SpeedMPH`) %>%
+  mutate(City = if_else(Zip==94107,"San Francisco",if_else(Zip==94063,"Redwood City",if_else(Zip==94301,"Palo Alto",if_else(Zip==94041,"Mountain View","San Jose"))))) %>%
+  select(everything(),-Zip)
+```
+
+```{r}
+weather_df <- weather_df %>%
+  mutate(is_raining = if_else(events == "Rain" | events == "Fog-Rain",1,0))
+```
+
+```{r}
+head(weather_df)
+```
+
+### Joining weather and net change tables
+
+```{r}
+
+t_set_3 <- t_set_2 %>%
+  left_join(weather_df,by = c("date" = "date_format","City"="City"))
+
+```
+
+```{r}
+head(t_set_3)%>%
+  kable() %>%
+  kable_styling(bootstrap_options = "basic")
+```
+
+
+### Creating is_weekday and is_winter features and outputting training set
+
+```{r}
+q<-t_set_3 %>%
+  mutate(day_week = wday(date)) %>%
+  mutate(is_weekday = if_else(day_week %in% c(2,3,4,5,6),1,0)) %>%
+  mutate(is_winter = if_else(month(date) %in% c(11,12,1,2),1,0)) %>%
+  mutate(time_of_day = if_else(hour %in% c(7,8,9),"Morning",if_else(hour %in% c(10,11,12,13,14,15),"Midday",if_else(hour %in% c(16,17,18),"Afternoon",if_else(hour %in% c(19,20,21,22,23),"Night","Overnight"))))) %>%
+  select(everything(),-date,-day_week,-events) %>%
+  filter(!is.na(temp)) %>%
+  write.csv("training_set_2.csv")
+
+```
+
+Check out the Jupyter Notebook titled `Bike_Modelling.ipynb` for the modelling section.
+
