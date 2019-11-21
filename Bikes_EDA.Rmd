@@ -20,52 +20,84 @@ stations <- read_csv("data/station_data.csv")
 ```
 
 ```{r}
-head(stations)
-```
-
-```{r}
 summary(stations)
 ```
 
-## Visual distribution of the stations
+### Cleaning 'Stations' data
 
-Note: Add map of Greater San Fransisco and configure sizes of points to match volume
-
-```{r, include=FALSE,echo=FALSE,eval=FALSE}
-library("rnaturalearth")
-library("rnaturalearthdata")
-library("sf")
-library('rgeos')
-
-```
-
-### Using ggplot
+#### Duplicate station names
 
 ```{r}
-stations %>%
-  ggplot(aes(Lat,Long)) +
-  geom_point()
+head(stations %>%
+  group_by(Name)%>%
+  summarize(n_occurences=n()) %>%
+  arrange(desc(n_occurences)))
 ```
 
-### Using leaflet
+Note: Civic Center BART, CalTrain 2, San Mateo County Center, Spear at Folsom are duplicates.
+
+#### Duplicate station IDs
 
 ```{r}
-leaflet(options = leafletOptions(preferCanvas = TRUE)) %>% setView(lat = 37.57,lng = -122.2,zoom=10) %>% addTiles() %>% addCircles(data=stations,~Long,~Lat,color="blue")
+stations[duplicated(stations$Name), ]
 ```
 
-## Distribution of Stations by City
+Note: The IDs to remove/combine from the trips dataset later are 85, 87, 88, 89, and 90.
+
+#### Creating clean stations data
+
+```{r}
+station <- stations[!duplicated(stations$Name), ]
+
+head(station)
+```
+
+### Number of stations per city
 
 ```{r}
 
-stations %>%
+station %>%
   group_by(City) %>%
   summarize(n_stations=n()) %>%
-  ggplot(aes(City,n_stations)) +
+  ggplot(aes(City,n_stations,fill=City)) +
   geom_col() +
-  ylab("Number of stations")
+  ylab("Number of stations")+
+  theme(legend.position = "none")
   
 
 ```
+
+### Number of stations by dock count
+
+```{r}
+station %>%
+  group_by(`Dock Count`) %>%
+  summarize(`Number of Stations`=n())
+```
+
+### Visual distribution of the stations
+
+#### Using leaflet
+
+```{r}
+
+factpal <- colorFactor(palette = "Set1",stations$City)
+
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>% setView(lat = 37.55,lng = -122.2,zoom=10) %>% addProviderTiles(providers$Esri.WorldTopoMap) %>% addCircles(data=stations,~Long,~Lat,color=~factpal(City))
+```
+
+## Closer look at San Francisco
+
+```{r}
+
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>% setView(lat = 37.79,lng = -122.40,zoom=14) %>% 
+  #addTiles() %>% 
+  addProviderTiles(providers$Hydda.RoadsAndLabels) %>% 
+  addProviderTiles(providers$Hydda.Base,options = providerTileOptions(opacity = 0.3))%>%
+  #addProviderTiles(providers$Esri.NatGeoWorldMap,options = providerTileOptions(opacity = 0.35))%>%
+  addCircleMarkers(data=stations,~Long,~Lat,color="Red",label = ~Name,radius = ~`Dock Count`/2.5,stroke = FALSE,fillOpacity = 0.5)
+```
+
 
 # Trip Data
 
@@ -74,6 +106,187 @@ stations %>%
 trips <- read_csv("data/trip_data.csv")
 
 ```
+
+```{r}
+head(trips)
+```
+
+```{r}
+summary(trips)
+```
+
+
+### Cleaning 'Trips' Data
+
+```{r}
+trips_clean <- trips %>%
+  rename(start_date = `Start Date`,start_station = `Start Station`,end_date = `End Date`,end_station = `End Station`,trip_id = `Trip ID`) %>%
+  mutate(start_station = replace(start_station, start_station == 87, 49),
+         start_station = replace(start_station, start_station == 88, 69),
+         start_station = replace(start_station, start_station == 89, 72),
+         start_station = replace(start_station, start_station == 90, 72),
+         end_station = replace(end_station,end_station == 87, 49),
+         end_station = replace(end_station,end_station == 88, 69),
+         end_station = replace(end_station,end_station == 89, 72),
+         end_station = replace(end_station,end_station == 90, 72))
+```
+
+### Combining Trips and Stations data
+
+```{r}
+trips_details <- trips_clean %>%
+  left_join(stations,by=c("start_station"="Id")) %>%
+  rename(start_city=City, start_name = Name, start_lat = Lat, start_long = Long, start_dock = `Dock Count`) %>%
+  left_join(stations,by=c("end_station"="Id")) %>%
+  rename(end_city = City,end_name = Name,end_lat = Lat,end_long = Long, end_dock = `Dock Count`) %>%
+  select(trip_id,start_date,start_station,start_name,start_city,start_lat,start_long,start_dock,end_date,end_station,end_name,end_city,end_lat,end_long,end_dock,`Subscriber Type`) 
+
+```
+
+### Start and End Cities
+
+```{r}
+trips_details %>%
+  group_by(start_city,end_city)%>%
+  summarize(number_of_trips=n())%>%
+  arrange(desc(number_of_trips))
+```
+
+Note: Almost all trips start and end in the same city. The vast majority of those being within the city of San Francisco.
+
+## Trips within San Francisco
+
+Seeing as the vast majority of trips in the trips dataset occurred within San Francisco city, we'll focus on these for the remainder of the analysis and building of the training set.
+
+```{r}
+sf_trips <- trips_details %>%
+  filter(start_city == "San Francisco" & end_city == "San Francisco") %>%
+  select(-start_city,-end_city)
+```
+
+```{r}
+head(sf_trips)
+```
+
+
+### Visualizing volume of trips in San Francisco
+
+Looking at most active stations for trips started (red) and trips ended (blue)
+
+```{r}
+sf_start <- sf_trips %>%
+  group_by(start_station,start_lat,start_long,start_name)%>%
+  summarize(n=n())
+```
+
+```{r}
+sf_end <- sf_trips %>%
+  group_by(end_station,end_lat,end_long,end_name)%>%
+  summarize(n=n())
+```
+
+```{r}
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>% setView(lat = 37.79,lng = -122.4,zoom=14) %>% 
+  addProviderTiles(providers$Hydda.RoadsAndLabels) %>% 
+  addProviderTiles(providers$Hydda.Base,options = providerTileOptions(opacity = 0.3))%>%
+  addCircleMarkers(data=sf_start,~start_long,~start_lat,color="Red",group = "Start",popup=~ paste(
+          start_name,
+          "</br><b>Trips Started:</b>",
+          n
+        ),radius = ~n/1200,stroke = FALSE,fillOpacity = 0.5)%>%
+  addCircleMarkers(data=sf_end,~end_long,~end_lat,color="Blue",group="End",popup=~ paste(
+          end_name,
+          "</br><b>Trips Ended:</b>",
+          n
+        ),radius = ~n/1200,stroke=FALSE,fillOpacity = 0.5) %>%
+  addLayersControl(
+    overlayGroups = c("Start", "End"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+```
+
+### Most popular starting stations
+
+```{r}
+## Refactoring start_name and end_name to help with sorting
+
+sf_trips$start_name <- factor(sf_trips$start_name, levels=unique(as.character(sf_trips$start_name)) )
+sf_trips$end_name <- factor(sf_trips$end_name, levels=unique(as.character(sf_trips$end_name)) )
+
+```
+
+```{r}
+
+sf_trips %>%
+  group_by(start_station,start_name) %>%
+  summarize(n=n())%>%
+  ggplot(aes(x=reorder(start_name,n),n))+
+  geom_col()+
+  theme(axis.text.x = element_text(size=7,angle = 45, hjust = 1))+
+  ylab("Number of trips started")+xlab("")+
+  ggtitle("Number of trips started by station name")
+```
+
+### Most popular ending stations
+
+```{r}
+
+sf_trips %>%
+  group_by(end_station,end_name) %>%
+  summarize(n=n())%>%
+  ggplot(aes(x=reorder(end_name,n),n))+
+  geom_col()+
+  theme(axis.text.x = element_text(size=7,angle = 45, hjust = 1))+
+  ylab("Number of trips ended")+xlab("")+
+  ggtitle("Number of trips ended by station name")
+
+
+```
+
+### Side-by-side comparison
+
+```{r}
+### Getting dataframe into the format that allows 'dodge2' visualization
+
+sf_start<-sf_trips %>%
+  group_by(start_station,start_name) %>%
+  summarize(n_start=n())%>%
+  mutate(type = "Start")
+
+sf_end<-sf_trips %>%
+  group_by(end_station,end_name) %>%
+  summarize(n_end=n()) %>%
+  mutate(type = "End") %>%
+  rename(start_station = end_station,start_name = end_name,n_start=n_end)
+
+viz_sf <- rbind(sf_start,sf_end)
+
+```
+
+
+```{r}
+### Refactoring to show start before end
+
+viz_sf$type <- factor(viz_sf$type, levels= c("Start","End"))
+
+```
+
+
+```{r}
+viz_sf %>%
+  ggplot(aes(reorder(start_name,n_start),n_start,fill=type))+
+  geom_col(position="dodge2")+
+  theme(axis.text.x = element_text(size=7,angle = 45, hjust = 1),legend.title = element_blank(),legend.position = c(.05, .95),
+    legend.justification = c("left", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6))+
+  ylab("Number of trips")+xlab("")+
+  ggtitle("Number of trips started/ended by station name")
+           
+```
+
+-----------------------
+
 
 ```{r}
 head(trips)%>%
@@ -105,9 +318,11 @@ trips %>%
   select(everything(),-`End Date`,-`End Station`) %>%
   left_join(stations_trips,by = c("Start Station"="Id")) %>%
   group_by(City) %>%
-  summarize(n=n())%>%
-  kable() %>%
-  kable_styling(bootstrap_options = "basic")
+  summarize(n=n())
+
+#%>%
+ # kable() %>%
+  #kable_styling(bootstrap_options = "basic")
 ```
 
 ### Takeaway: Large majority of trips started from San Francisco
@@ -129,9 +344,11 @@ trips %>%
   select(everything(),-`Start Date`,-`Start Station`) %>%
   left_join(stations_trips,by = c("End Station"="Id")) %>%
   group_by(City) %>%
-  summarize(n=n())%>%
-  kable() %>%
-  kable_styling(bootstrap_options = "basic")
+  summarize(n=n())
+
+#%>%
+ # kable() %>%
+  #kable_styling(bootstrap_options = "basic")
 ```
 
 ### Takeaway: Most trips start and end in the same city
@@ -142,9 +359,11 @@ trips %>%
 head(pop_routes <- trips %>%
   group_by(start_id = `Start Station`,end_id = `End Station`)%>%
   summarize(n=n()) %>%
-  arrange(desc(n)),10)%>%
-  kable() %>%
-  kable_styling(bootstrap_options = "basic")
+  arrange(desc(n)),10)
+
+#%>%
+  #kable() %>%
+  #kable_styling(bootstrap_options = "basic")
 ```
 
 ### Visualizing popular routes in San Francisco
